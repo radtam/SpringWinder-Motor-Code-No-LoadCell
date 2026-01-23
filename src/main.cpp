@@ -177,9 +177,9 @@ void printHelp() {
   Serial.println(F("  cal weight <weight>"));
   Serial.println(F("  lc preset"));
   Serial.println(F("  rate <Hz>          (print & read rate)"));
-  Serial.println(F("save        - save cfg settings to NVS"));
-  Serial.println(F("load        - load cfg settings from NVS"));
-  Serial.println(F("wipe        - erase saved settings (motor namespace)"));
+  Serial.println(F("  save        - save cfg settings to NVS"));
+  Serial.println(F("  load        - load cfg settings from NVS"));
+  Serial.println(F("  wipe        - erase saved settings (motor namespace)"));
 }
 
 void printStatus() {
@@ -353,6 +353,31 @@ void handleCommand(const String &line) {
     lockCfg();
     unlockCfg();
     Serial.printf("Print/read rate -> %u Hz\n", hz);
+    return;
+  }
+
+  if (s == "save") {
+    if (saveConfig()) {
+      Serial.println(F("Configuration saved to NVS."));
+    } else {
+      Serial.println(F("Failed to save configuration."));
+    }
+    return;
+  }
+  if (s == "load") {
+    if (loadConfig()) {
+      Serial.println(F("Configuration loaded from NVS."));
+    } else {
+      Serial.println(F("Failed to load configuration."));
+    }
+    return;
+  }
+  if (s == "wipe") {
+    if (wipeConfig()) {
+      Serial.println(F("Configuration wiped from NVS."));
+    } else {
+      Serial.println(F("Failed to wipe configuration."));
+    }
     return;
   }
 
