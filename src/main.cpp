@@ -8,13 +8,13 @@
     AccelStepper
     HX711
 
-    hello words
 */
 
 #include <Arduino.h>
 #include <AccelStepper.h>
 #include <HX711_MP.h>
 #include <vector>
+#include <Preferences.h>
 
 // ----------------------- USER PINS (EDIT) -----------------------
 static const int STEP_PIN    = 13;  //14 
@@ -26,12 +26,8 @@ constexpr int LINK_RX_PIN = 16;   // receives from display TX
 constexpr int LINK_TX_PIN = 17;   // optional, for replies
 #define LINK_UART Serial2
 
-// Load cell config
-#define LC_SCK_PIN 33
-#define LC_DT_PIN 32
-
-// ----------------------- DEFAULT CONFIG -------------------------
-struct Config {
+// ----------------------- DEFAULT MOTOR CONFIG -------------------------
+struct Config {        // The varibles under Config are being saved to NVS 
   // Motion
   float maxSpeed_sps   = 1200.0f;   // steps/second
   float accel_sps2     = 8000.0f;    // steps/second^2
@@ -41,12 +37,22 @@ struct Config {
   uint32_t cycles_goal = 10;        // number of A->B->A cycles
 
   // Convenience
-  float steps_per_mm   = 800.0f;    // if you want to think in mm
-
-  // Load cell
-  float knownWeight      = 10.00f; 
-  uint16_t print_hz    = 20;        // print & read rate (Hz)
+  float steps_per_mm   = 1600.0f;    // if you want to think in mm, trying to use it as steprs per rotation sometimes
 } cfg;
+
+// ----------------------- PERSISTENT STORAGE (NVS / "EEPROM") -----------------------
+Preferences prefs;
+// bump these if you change Config layout later
+static const uint32_t CFG_MAGIC   = 0xC0FFEE01;
+static const uint16_t CFG_VERSION = 1;
+struct PersistHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t length;   // bytes of payload that follow
+};
+bool saveConfig();
+bool loadConfig();
+bool wipeConfig();
 
 // ----------------------- MODES & STATES -------------------------
 enum class Mode : uint8_t { SETUP=0, LOADCELL=1, LIVETEST=2 };
@@ -89,6 +95,52 @@ void lockCfg()   { xSemaphoreTake(cfgMutex, portMAX_DELAY); }
 void unlockCfg() { xSemaphoreGive(cfgMutex); }
 
 
+// ----------------------- NVS SAVE/LOAD --------------------------
+bool saveConfig()
+{
+  lockCfg();
+  PersistHeader h;
+  h.magic   = CFG_MAGIC;
+  h.version = CFG_VERSION;
+  h.length  = sizeof(Config);
+  prefs.begin("motor", false); // RW namespace "motor"
+  bool ok1 = (prefs.putBytes("hdr", &h, sizeof(h)) == sizeof(h));
+  bool ok2 = (prefs.putBytes("cfg", &cfg, sizeof(cfg)) == sizeof(cfg));
+  prefs.end();
+  unlockCfg();
+  return ok1 && ok2;
+}
+bool loadConfig()
+{
+  prefs.begin("motor", true); // RO
+  PersistHeader h;
+  size_t n = prefs.getBytes("hdr", &h, sizeof(h));
+  if (n != sizeof(h) || h.magic != CFG_MAGIC || h.version != CFG_VERSION || h.length != sizeof(Config)) {
+    prefs.end();
+    return false; // not found or incompatible
+  }
+  Config tmp;
+  n = prefs.getBytes("cfg", &tmp, sizeof(tmp));
+  prefs.end();
+  if (n != sizeof(tmp)) return false;
+  // Apply atomically
+  lockCfg();
+  cfg = tmp;
+  stepper.setMaxSpeed(cfg.maxSpeed_sps);
+  stepper.setAcceleration(cfg.accel_sps2);
+  unlockCfg();
+  return true;
+}
+bool wipeConfig()
+{
+  prefs.begin("motor", false);
+  bool ok = prefs.clear(); // clears ONLY the "motor" namespace
+  prefs.end();
+  return ok;
+}
+
+
+
 String modeToStr(Mode m) {
   switch (m) {
     case Mode::SETUP:    return "SETUP";
@@ -125,6 +177,9 @@ void printHelp() {
   Serial.println(F("  cal weight <weight>"));
   Serial.println(F("  lc preset"));
   Serial.println(F("  rate <Hz>          (print & read rate)"));
+  Serial.println(F("save        - save cfg settings to NVS"));
+  Serial.println(F("load        - load cfg settings from NVS"));
+  Serial.println(F("wipe        - erase saved settings (motor namespace)"));
 }
 
 void printStatus() {
@@ -136,7 +191,6 @@ void printStatus() {
   Serial.printf("Cycles: %lu (goal)   Completed: %lu\n", (unsigned long)cfg.cycles_goal, (unsigned long)cycles_completed);
   Serial.printf("Dwell: %lu ms\n", (unsigned long)cfg.dwell_ms);
   Serial.printf("Steps/mm: %.3f\n", cfg.steps_per_mm);
-  Serial.printf("Print rate: %u Hz\n", cfg.print_hz);
   Serial.printf("Motor pos: %ld (steps)\n", stepper.currentPosition());
   unlockCfg();
 }
@@ -297,7 +351,6 @@ void handleCommand(const String &line) {
     if (hz < 1) hz = 1;
     if (hz > 200) hz = 200;
     lockCfg();
-    cfg.print_hz = hz;
     unlockCfg();
     Serial.printf("Print/read rate -> %u Hz\n", hz);
     return;
@@ -409,15 +462,9 @@ void taskStepper(void *pv) {
 
 // ----------------------- TASK: CONTROL (Core 1) -----------------
 void taskControl(void *pv) {
-  const uint16_t defaultHz = cfg.print_hz;
   uint32_t lastPrint = 0;
-  uint32_t printIntervalMs = 1000UL / (defaultHz ? defaultHz : 20);
 
   for (;;) {
-    // Update interval if changed
-    if (printIntervalMs != (1000UL / (cfg.print_hz ? cfg.print_hz : 20))) {
-      printIntervalMs = 1000UL / (cfg.print_hz ? cfg.print_hz : 20);
-    }
 
     // 1) Read Serial
     String line;
@@ -481,6 +528,13 @@ void setup() {
 
   // Mutex
   cfgMutex = xSemaphoreCreateMutex();
+
+ // Load saved settings (if present)
+  if (loadConfig()) {
+    Serial.println(F("Loaded cfg from NVS."));
+  } else {
+    Serial.println(F("No saved cfg found (using defaults)."));
+  }
 
   // Stepper
   if (ENABLE_PIN >= 0) {
