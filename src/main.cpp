@@ -29,7 +29,7 @@ constexpr int LINK_TX_PIN = 17;   // optional, for replies
 // ----------------------- DEFAULT MOTOR CONFIG -------------------------
 struct Config {        // The varibles under Config are being saved to NVS 
   // Motion
-  float maxSpeed_sps   = 1200.0f;   // steps/second
+  float maxSpeed_sps   = 6400.0f;   // steps/second
   float accel_sps2     = 8000.0f;    // steps/second^2
   long  posA_steps     = 0;         // first endpoint
   long  posB_steps     = -6400;      // second endpoint
@@ -337,11 +337,17 @@ void handleCommand(const String &line) {
       return;
     }
     float mm = s.substring(6).toFloat();
-    lockCfg();
     long tgt = lroundf(mm * cfg.steps_per_mm);
-    stepper.move(tgt);
-    //stepper.moveTo(tgt);
+    long curr = stepper.currentPosition();
+    lockCfg();
+    stepper.setMaxSpeed(6400);
+    stepper.setAcceleration(8000);
+    stepper.moveTo(curr+tgt);
     unlockCfg();
+    //stepper.move(tgt);
+    
+    //stepper.setMaxSpeed(cfg.maxSpeed_sps);
+    //stepper.moveTo(stepper.currentPosition()+tgt);
     Serial.printf("Moving to ~%0.3f mm\n", mm);
     return;
   }
