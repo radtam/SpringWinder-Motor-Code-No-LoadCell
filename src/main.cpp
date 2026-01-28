@@ -337,9 +337,18 @@ void handleCommand(const String &line) {
       return;
     }
     float mm = s.substring(6).toFloat();
+    stepper.setCurrentPosition(0);
+    long tgt = lroundf(mm * cfg.steps_per_mm);
+    lockCfg();
+    cfg.posB_steps = tgt;  //tgt might have to be .toInt()
+    unlockCfg();
+
+  //set mode to live
+  //then start for 1 movement
+  //then stop
     long tgt = lroundf(mm * cfg.steps_per_mm);
     long curr = stepper.currentPosition();
-    lockCfg();
+    
     stepper.setMaxSpeed(6400);
     stepper.setAcceleration(8000);
     stepper.moveTo(curr+tgt);
